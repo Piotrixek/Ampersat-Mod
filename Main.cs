@@ -4,6 +4,9 @@ using Amp_Player;
 using System.Reflection;
 using System.Collections.Generic;
 using HarmonyLib;
+using System.Collections;
+using DG.Tweening;
+using UnityEngine.AI;
 
 namespace TestMod
 {
@@ -13,7 +16,7 @@ namespace TestMod
         public const string Description = "Mod for doing funny stuff";
         public const string Author = "Veni";
         public const string Company = null;
-        public const string Version = "2.2.1";
+        public const string Version = "2.4.0";
         public const string DownloadLink = null;
     }
 
@@ -26,7 +29,7 @@ namespace TestMod
         private bool showMenu = true;
         private Rect menuRect = new Rect(20, 20, 400, 550);
         private int currentTab = 0;
-        private string[] tabs = { "Player", "Combat", "World", "Spawner", "Misc" };
+        private string[] tabs = { "Player", "Combat", "Weapons", "World", "Spawner", "Misc" };
 
         // --- Player Cheats ---
         private bool godMode = false;
@@ -39,22 +42,29 @@ namespace TestMod
         private bool originalGravity;
 
         // --- Combat Cheats ---
-        private bool noCooldowns = false;
-        private bool noOverheat = false;
-        private bool alwaysCrit = false;
         private bool autoSwitchSpells = false;
         private float knockbackMulti = 1.0f;
         private float originalMKnockback = -1f;
         private float originalRKnockback = -1f;
+        private bool reflectStatusEffects = false;
+        private bool makeEnemiesCowards = false;
+
+        // --- Weapon Cheats ---
+        private bool oneHitKills = false;
+        private bool noCooldowns = false;
+        private bool noOverheat = false;
+        private bool alwaysCrit = false;
+        private float damageMultiplier = 1.0f;
+        private int projectileMultiplier = 1;
+        private float explosionRadiusMultiplier = 1.0f;
         private bool infiniteRicochet = false;
         private bool homingProjectiles = false;
-        private bool memeDamage = false;
-        private bool reflectStatusEffects = false;
 
         // --- World Cheats ---
         private bool disableTraps = false;
         private bool trapsHitEnemies = false;
         private float timeScale = 1.0f;
+        private float enemyScale = 1.0f;
 
         // --- Spawner Cheats ---
         private bool instantBurst = false;
@@ -65,6 +75,7 @@ namespace TestMod
 
         // --- Misc Cheats ---
         private bool discoMode = false;
+        private bool memeDamage = false;
 
         // for reflection
         private MethodInfo resetOverheatMethod;
@@ -75,11 +86,18 @@ namespace TestMod
         private FieldInfo timeSinceLastDashField;
         private FieldInfo primarySpellField;
         private FieldInfo alternateSpellField;
+        private FieldInfo meleeWeaponField;
+        private FieldInfo rangedWeaponField;
 
         public override void OnInitializeMelon()
         {
             HarmonyInstance.PatchAll(typeof(DamageIndicatorPatch));
             HarmonyInstance.PatchAll(typeof(PlayerManager_ApplyStatusEffects_Patch));
+            HarmonyInstance.PatchAll(typeof(Enemy_TakeDamage_Patch));
+            HarmonyInstance.PatchAll(typeof(RangedWeapon_RangedAttack_Patch));
+            HarmonyInstance.PatchAll(typeof(MeleeWeapon_MeleeAttack_Patch));
+            HarmonyInstance.PatchAll(typeof(Spell_CastSpell_Patch));
+            HarmonyInstance.PatchAll(typeof(RangedWeapon_DeployDestructEffect_Patch));
         }
 
         public override void OnSceneWasLoaded(int buildindex, string sceneName)
@@ -159,6 +177,8 @@ namespace TestMod
                     timeSinceLastDashField = playerControllerType.GetField("timeSinceLastDash", BindingFlags.NonPublic | BindingFlags.Instance);
                     primarySpellField = playerControllerType.GetField("primarySpell", BindingFlags.NonPublic | BindingFlags.Instance);
                     alternateSpellField = playerControllerType.GetField("alternateSpell", BindingFlags.NonPublic | BindingFlags.Instance);
+                    meleeWeaponField = playerControllerType.GetField("meleeWeapon", BindingFlags.NonPublic | BindingFlags.Instance);
+                    rangedWeaponField = playerControllerType.GetField("rangedWeapon", BindingFlags.NonPublic | BindingFlags.Instance);
 
 
                     HandleMenuState();
@@ -170,6 +190,7 @@ namespace TestMod
             UpdateProjectiles();
             UpdateTraps();
             UpdateSpawners();
+            UpdateEnemyStates();
         }
 
         private void ApplyCheats()
@@ -180,6 +201,11 @@ namespace TestMod
             Time.timeScale = timeScale;
             DamageIndicatorPatch.memeDamageEnabled = memeDamage;
             PlayerManager_ApplyStatusEffects_Patch.reflectEnabled = reflectStatusEffects;
+            Enemy_TakeDamage_Patch.oneHitKillsEnabled = oneHitKills;
+            RangedWeapon_RangedAttack_Patch.damageMultiplier = damageMultiplier;
+            MeleeWeapon_MeleeAttack_Patch.damageMultiplier = damageMultiplier;
+            Spell_CastSpell_Patch.projectileMultiplier = projectileMultiplier;
+            RangedWeapon_DeployDestructEffect_Patch.explosionRadiusMultiplier = explosionRadiusMultiplier;
 
             if (p_manager != null && godMode != lastGodModeState)
             {
@@ -333,6 +359,25 @@ namespace TestMod
             }
         }
 
+        private void UpdateEnemyStates()
+        {
+            if (showMenu) return;
+
+            var enemies = GameObject.FindObjectsOfType<EnemyController>();
+            foreach (var enemy in enemies)
+            {
+                if (makeEnemiesCowards)
+                {
+                    enemy.SetRetreat(true, true);
+                }
+
+                if (enemyScale != 1.0f)
+                {
+                    enemy.transform.localScale = new Vector3(enemyScale, enemyScale, enemyScale);
+                }
+            }
+        }
+
         public override void OnGUI()
         {
             if (!showMenu) return;
@@ -358,9 +403,10 @@ namespace TestMod
             {
                 case 0: DrawPlayerTab(); break;
                 case 1: DrawCombatTab(); break;
-                case 2: DrawWorldTab(); break;
-                case 3: DrawSpawnerTab(); break;
-                case 4: DrawMiscTab(); break;
+                case 2: DrawWeaponsTab(); break;
+                case 3: DrawWorldTab(); break;
+                case 4: DrawSpawnerTab(); break;
+                case 5: DrawMiscTab(); break;
             }
 
             GUILayout.EndVertical();
@@ -393,26 +439,44 @@ namespace TestMod
 
         void DrawCombatTab()
         {
-            GUILayout.Label("--- Attacks ---");
-            noCooldowns = GUILayout.Toggle(noCooldowns, "No Attack Cooldowns");
-            noOverheat = GUILayout.Toggle(noOverheat, "No Ranged Overheat");
-            alwaysCrit = GUILayout.Toggle(alwaysCrit, "Always Critical Hits");
+            GUILayout.Label("--- General ---");
             autoSwitchSpells = GUILayout.Toggle(autoSwitchSpells, "Auto-Switch Spells");
             reflectStatusEffects = GUILayout.Toggle(reflectStatusEffects, "Reflect Status Effects");
-
-            GUILayout.Label("Knockback: " + knockbackMulti.ToString("F1") + "x");
-            knockbackMulti = GUILayout.HorizontalSlider(knockbackMulti, 1.0f, 20.0f);
-
-            GUILayout.Space(10);
-            GUILayout.Label("--- Projectiles ---");
-            infiniteRicochet = GUILayout.Toggle(infiniteRicochet, "Infinite Ricochet");
-            homingProjectiles = GUILayout.Toggle(homingProjectiles, "Homing Projectiles");
-            memeDamage = GUILayout.Toggle(memeDamage, "Meme Damage Text");
+            makeEnemiesCowards = GUILayout.Toggle(makeEnemiesCowards, "Make Enemies Cowards");
 
             GUILayout.Space(10);
             GUILayout.Label("--- Actions ---");
             if (GUILayout.Button("Max Out Stats")) MaxOutStats();
             if (GUILayout.Button("Kill All Enemies")) KillAllEnemies();
+        }
+
+        void DrawWeaponsTab()
+        {
+            GUILayout.Label("--- General ---");
+            oneHitKills = GUILayout.Toggle(oneHitKills, "One-Hit Kills");
+            noCooldowns = GUILayout.Toggle(noCooldowns, "No Attack Cooldowns");
+            noOverheat = GUILayout.Toggle(noOverheat, "No Ranged Overheat");
+            alwaysCrit = GUILayout.Toggle(alwaysCrit, "Always Critical Hits");
+
+            GUILayout.Space(10);
+            GUILayout.Label("--- Multipliers ---");
+            GUILayout.Label("Damage Multiplier: " + damageMultiplier.ToString("F1") + "x");
+            damageMultiplier = GUILayout.HorizontalSlider(damageMultiplier, 1.0f, 50.0f);
+
+            GUILayout.Label("Projectile Multiplier: " + projectileMultiplier + "x");
+            projectileMultiplier = (int)GUILayout.HorizontalSlider(projectileMultiplier, 1, 20);
+
+            GUILayout.Label("Explosion Radius: " + explosionRadiusMultiplier.ToString("F1") + "x");
+            explosionRadiusMultiplier = GUILayout.HorizontalSlider(explosionRadiusMultiplier, 1.0f, 10.0f);
+
+            GUILayout.Space(10);
+            GUILayout.Label("--- Projectile Effects ---");
+            infiniteRicochet = GUILayout.Toggle(infiniteRicochet, "Infinite Ricochet");
+            homingProjectiles = GUILayout.Toggle(homingProjectiles, "Homing Projectiles");
+
+            GUILayout.Space(10);
+            GUILayout.Label("--- Actions ---");
+            if (GUILayout.Button("Instant Destruct Weapon")) InstantDestruct();
         }
 
         void DrawWorldTab()
@@ -428,6 +492,11 @@ namespace TestMod
             GUILayout.Label("Time Scale: " + timeScale.ToString("F1") + "x");
             timeScale = GUILayout.HorizontalSlider(timeScale, 0.1f, 5.0f);
             if (GUILayout.Button("Reset Time")) timeScale = 1.0f;
+
+            GUILayout.Space(10);
+            GUILayout.Label("--- Enemies ---");
+            GUILayout.Label("Enemy Size: " + enemyScale.ToString("F1") + "x");
+            enemyScale = GUILayout.HorizontalSlider(enemyScale, 0.1f, 5.0f);
         }
 
         void DrawSpawnerTab()
@@ -458,9 +527,7 @@ namespace TestMod
                 var enemySO = allEnemiesList.listOfAllEnemies[selectedEnemyIndex];
                 if (enemyPrefabMap.TryGetValue(enemySO, out GameObject prefabToSpawn))
                 {
-                    GameObject newEnemy = GameObject.Instantiate(prefabToSpawn, p_controller.transform.position + p_controller.transform.forward * 2, Quaternion.identity);
-                    newEnemy.SetActive(true);
-                    MelonLogger.Msg("spawned a " + enemySO.enemyName);
+                    SpawnEnemyAroundPlayer(prefabToSpawn, enemySO.enemyName);
                 }
                 else
                 {
@@ -473,6 +540,91 @@ namespace TestMod
         {
             GUILayout.Label("--- Visuals ---");
             discoMode = GUILayout.Toggle(discoMode, "Disco Mode (Spin)");
+            memeDamage = GUILayout.Toggle(memeDamage, "Meme Damage Text");
+        }
+
+        void InstantDestruct()
+        {
+            if (p_controller == null || meleeWeaponField == null || rangedWeaponField == null) return;
+
+            var meleeWeaponObj = meleeWeaponField.GetValue(p_controller);
+            var rangedWeaponObj = rangedWeaponField.GetValue(p_controller) as RangedWeapon;
+            var am = p_controller.attributeManager;
+
+            if (rangedWeaponObj != null)
+            {
+                rangedWeaponObj.DeployDestructEffect(am.combinedDestructMultiplier, am.combinedRKnockback, am.combinedDmgRTotalKinetic, am.combinedDmgRTotalFire, am.combinedDmgRTotalIce, am.combinedDmgRTotalChaos, null);
+            }
+
+            if (meleeWeaponObj != null)
+            {
+                var deployMethod = meleeWeaponObj.GetType().GetMethod("DeployDestructEffect");
+                if (deployMethod != null)
+                {
+                    deployMethod.Invoke(meleeWeaponObj, new object[] { am.combinedDestructMultiplier, am.combinedMKnockback, am.combinedDmgMKinetic, am.combinedDmgMFire, am.combinedDmgMIce, am.combinedDmgMChaos, null });
+                }
+            }
+        }
+
+        void SpawnEnemyAroundPlayer(GameObject prefab, string enemyName)
+        {
+            if (p_controller == null) return;
+
+            Vector3 spawnPosition = Vector3.zero;
+            bool positionFound = false;
+            for (int i = 0; i < 10; i++)
+            {
+                Vector3 randomDirection = Random.insideUnitSphere * 5f;
+                randomDirection.y = 0;
+                randomDirection += p_controller.transform.position;
+                NavMeshHit hit;
+                if (NavMesh.SamplePosition(randomDirection, out hit, 5f, NavMesh.AllAreas))
+                {
+                    spawnPosition = hit.position;
+                    positionFound = true;
+                    break;
+                }
+            }
+
+            if (!positionFound)
+            {
+                MelonLogger.Error("Could not find a valid spawn position on the NavMesh near the player.");
+                return;
+            }
+
+            MelonCoroutines.Start(SpawnSequence(prefab, spawnPosition, enemyName));
+        }
+
+        private IEnumerator SpawnSequence(GameObject prefab, Vector3 endPos, string enemyName)
+        {
+            Vector3 startPos = endPos + Vector3.up * 3f;
+            GameObject newEnemy = GameObject.Instantiate(prefab, startPos, Quaternion.identity);
+
+            var navAgent = newEnemy.GetComponent<NavMeshAgent>();
+            var collider = newEnemy.GetComponent<Collider>();
+            var roamer = newEnemy.GetComponent<IRoam>();
+
+            if (navAgent != null) navAgent.enabled = false;
+            if (collider != null) collider.enabled = false;
+            newEnemy.SetActive(true);
+
+            float spawnMoveDuration = 1f;
+            newEnemy.transform.DOMove(endPos, spawnMoveDuration).SetEase(Ease.OutBounce);
+
+            yield return new WaitForSeconds(spawnMoveDuration);
+
+            if (newEnemy != null)
+            {
+                if (navAgent != null)
+                {
+                    navAgent.enabled = true;
+                    navAgent.Warp(endPos);
+                }
+                if (collider != null) collider.enabled = true;
+                if (roamer != null) roamer.Roam();
+
+                MelonLogger.Msg($"spawned a {enemyName}");
+            }
         }
 
         void TeleportToMouse()
@@ -526,6 +678,116 @@ namespace TestMod
             originalRKnockback = am.combinedRKnockback;
 
             MelonLogger.Msg("stats are now ridiculous have fun");
+        }
+    }
+
+    [HarmonyPatch(typeof(RangedWeapon), "RangedAttack")]
+    public static class RangedWeapon_RangedAttack_Patch
+    {
+        public static float damageMultiplier = 1.0f;
+        [HarmonyPrefix]
+        public static void Prefix(ref float combinedDMGRTotalKinetic, ref float combinedDMGRTotalFire, ref float combinedDMGRTotalIce, ref float combinedDMGRTotalChaos)
+        {
+            if (damageMultiplier > 1.0f)
+            {
+                combinedDMGRTotalKinetic *= damageMultiplier;
+                combinedDMGRTotalFire *= damageMultiplier;
+                combinedDMGRTotalIce *= damageMultiplier;
+                combinedDMGRTotalChaos *= damageMultiplier;
+            }
+        }
+    }
+
+    // Assuming MeleeWeapon class exists and has this method signature from PlayerController
+    [HarmonyPatch(typeof(MeleeWeapon), "MeleeAttack")]
+    public static class MeleeWeapon_MeleeAttack_Patch
+    {
+        public static float damageMultiplier = 1.0f;
+        [HarmonyPrefix]
+        public static void Prefix(ref float dmgKinetic, ref float dmgFire, ref float dmgIce, ref float dmgChaos)
+        {
+            if (damageMultiplier > 1.0f)
+            {
+                dmgKinetic *= damageMultiplier;
+                dmgFire *= damageMultiplier;
+                dmgIce *= damageMultiplier;
+                dmgChaos *= damageMultiplier;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Spell), "CastSpell")]
+    public static class Spell_CastSpell_Patch
+    {
+        public static int projectileMultiplier = 1;
+        private static int originalProjectileCount;
+        private static FieldInfo projectilesToShootField;
+
+        [HarmonyPrefix]
+        public static void Prefix(Spell __instance)
+        {
+            if (projectileMultiplier > 1)
+            {
+                if (projectilesToShootField == null)
+                    projectilesToShootField = typeof(Spell).GetField("projectilesToShoot", BindingFlags.NonPublic | BindingFlags.Instance);
+
+                originalProjectileCount = (int)projectilesToShootField.GetValue(__instance);
+                projectilesToShootField.SetValue(__instance, originalProjectileCount * projectileMultiplier);
+            }
+        }
+
+        [HarmonyPostfix]
+        public static void Postfix(Spell __instance)
+        {
+            if (projectileMultiplier > 1)
+            {
+                projectilesToShootField.SetValue(__instance, originalProjectileCount);
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(RangedWeapon), "DeployDestructEffect")]
+    public static class RangedWeapon_DeployDestructEffect_Patch
+    {
+        public static float explosionRadiusMultiplier = 1.0f;
+        private static float originalRadius;
+        private static FieldInfo destructRadiusField;
+
+        [HarmonyPrefix]
+        public static void Prefix(RangedWeapon __instance)
+        {
+            if (explosionRadiusMultiplier > 1.0f)
+            {
+                if (destructRadiusField == null)
+                    destructRadiusField = typeof(RangedWeapon).GetField("destructRadius", BindingFlags.NonPublic | BindingFlags.Instance);
+
+                originalRadius = (float)destructRadiusField.GetValue(__instance);
+                destructRadiusField.SetValue(__instance, originalRadius * explosionRadiusMultiplier);
+            }
+        }
+
+        [HarmonyPostfix]
+        public static void Postfix(RangedWeapon __instance)
+        {
+            if (explosionRadiusMultiplier > 1.0f)
+            {
+                destructRadiusField.SetValue(__instance, originalRadius);
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(EnemyController), "TakeDamage")]
+    public static class Enemy_TakeDamage_Patch
+    {
+        public static bool oneHitKillsEnabled = false;
+
+        [HarmonyPrefix]
+        public static void Prefix(EnemyController __instance, ref float dmgKinetic)
+        {
+            if (oneHitKillsEnabled)
+            {
+                dmgKinetic = __instance.enemySO.maxHealth * 2;
+            }
         }
     }
 
